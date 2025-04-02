@@ -12,12 +12,20 @@ from vnpy.trader.utility import available_timezones
 
 from ..engine import APP_NAME, ManagerEngine, BarOverview, TickOverview
 
+# 增加除权表
+from vnpy.trader.object import DividendData
+from ..engine import DividendOverview
+
+Interval_DR = 'DR'
+#
+
 
 INTERVAL_NAME_MAP = {
     Interval.TICK: "TICK",
     Interval.MINUTE: "分钟线",
     Interval.HOUR: "小时线",
     Interval.DAILY: "日线",
+    Interval_DR: "除权表",
 }
 
 
@@ -46,7 +54,8 @@ class ManagerWidget(QtWidgets.QWidget):
         import_button.clicked.connect(self.import_data)
 
         update_button: QtWidgets.QPushButton = QtWidgets.QPushButton("更新数据")
-        update_button.clicked.connect(self.update_data)
+        update_func = partial(self.update_data, None, None, None)
+        update_button.clicked.connect(update_func)
 
         download_button: QtWidgets.QPushButton = QtWidgets.QPushButton("下载数据")
         download_button.clicked.connect(self.download_data)
@@ -78,9 +87,10 @@ class ManagerWidget(QtWidgets.QWidget):
             "数据量",
             "开始时间",
             "结束时间",
-            "",
-            "",
-            ""
+            "查看",
+            "导出",
+            "更新",
+            "删除",
         ]
 
         self.tree: QtWidgets.QTreeWidget = QtWidgets.QTreeWidget()
@@ -147,6 +157,16 @@ class ManagerWidget(QtWidgets.QWidget):
         self.table.setColumnCount(len(labels))
         self.table.setHorizontalHeaderLabels(labels)
 
+    def setting_dr_table(self) -> None:
+        """"""
+        labels: list = [
+            "时间",
+            "比例因子",
+        ]
+
+        self.table.setColumnCount(len(labels))
+        self.table.setHorizontalHeaderLabels(labels)
+
     def refresh_tree(self) -> None:
         """"""
         self.tree.clear()
@@ -156,11 +176,15 @@ class ManagerWidget(QtWidgets.QWidget):
         exchange_childs: Dict[tuple[Interval, Exchange], QtWidgets.QTreeWidgetItem] = {}
 
         # 查询数据汇总，并基于合约代码进行排序
-        overviews: List[BarOverview] = self.engine.get_bar_overview() + self.engine.get_tick_overview()
+        overviews: List[BarOverview | TickOverview | DividendOverview] = (
+                self.engine.get_bar_overview() +
+                self.engine.get_tick_overview() +
+                self.engine.get_dividend_overview()
+        )
         overviews.sort(key=lambda x: x.symbol)
 
         # 添加数据周期节点
-        for interval in [Interval.TICK, Interval.MINUTE, Interval.HOUR, Interval.DAILY]:
+        for interval in [Interval.TICK, Interval.MINUTE, Interval.HOUR, Interval.DAILY, Interval_DR]:
             interval_child = QtWidgets.QTreeWidgetItem()
             interval_childs[interval] = interval_child
 
@@ -169,7 +193,14 @@ class ManagerWidget(QtWidgets.QWidget):
 
         # 遍历添加数据节点
         for overview in overviews:
-            interval = getattr(overview, 'interval', Interval.TICK)
+            if isinstance(overview, BarOverview):
+                interval = overview.interval
+            elif isinstance(overview, TickOverview):
+                interval = Interval.TICK
+            elif isinstance(overview, DividendOverview):
+                interval = Interval_DR
+            else:
+                raise AssertionError(f'发现未知类型 overview {overview}')
 
             # 获取交易所节点
             key: tuple = (interval, overview.exchange)
@@ -205,10 +236,11 @@ class ManagerWidget(QtWidgets.QWidget):
             output_button.clicked.connect(output_func)
 
             show_button: QtWidgets.QPushButton = QtWidgets.QPushButton("查看")
-            show_start: datetime = overview.start
+            # 要特意减少1天，因为时间选择器，会自动加一天
+            show_start: datetime = overview.start - timedelta(days=1)
             if interval == Interval.TICK:
                 # 如果是 tick 数据，则默认只看最近10天，避免爆内存
-                show_start = max(overview.end - timedelta(days=10), overview.start)
+                show_start = max(overview.end - timedelta(days=10), show_start)
             show_func = partial(
                 self.show_data,
                 overview.symbol,
@@ -218,6 +250,15 @@ class ManagerWidget(QtWidgets.QWidget):
                 overview.end
             )
             show_button.clicked.connect(show_func)
+
+            update_button: QtWidgets.QPushButton = QtWidgets.QPushButton("更新")
+            update_func = partial(
+                self.update_data,
+                overview.symbol,
+                overview.exchange,
+                interval
+            )
+            update_button.clicked.connect(update_func)
 
             delete_button: QtWidgets.QPushButton = QtWidgets.QPushButton("删除")
             delete_func = partial(
@@ -230,7 +271,8 @@ class ManagerWidget(QtWidgets.QWidget):
 
             self.tree.setItemWidget(item, 7, show_button)
             self.tree.setItemWidget(item, 8, output_button)
-            self.tree.setItemWidget(item, 9, delete_button)
+            self.tree.setItemWidget(item, 9, update_button)
+            self.tree.setItemWidget(item, 10, delete_button)
 
         # 展开顶层节点
         self.tree.addTopLevelItems(list(interval_childs.values()))
@@ -297,6 +339,8 @@ class ManagerWidget(QtWidgets.QWidget):
         end: datetime
     ) -> None:
         """"""
+        assert interval in [Interval.MINUTE, Interval.HOUR, Interval.DAILY], '其他Interval类型尚未支持'
+
         # Get output date range
         dialog: DateRangeDialog = DateRangeDialog(start, end)
         n: int = dialog.exec_()
@@ -348,7 +392,22 @@ class ManagerWidget(QtWidgets.QWidget):
         self.table.setRowCount(0)
         start, end = dialog.get_date_range()
 
-        if interval == Interval.TICK:
+        if interval == Interval_DR:
+            drs: List[DividendData] = self.engine.load_dividend_data(
+                symbol,
+                exchange,
+                start,
+                end
+            )
+
+            self.setting_dr_table()
+            self.table.setRowCount(len(drs))
+
+            for row, dr in enumerate(drs):
+                self.table.setItem(row, 0, DataCell(dr.datetime.strftime("%Y-%m-%d %H:%M:%S")))
+                self.table.setItem(row, 1, DataCell(str(dr.ratio)))
+
+        elif interval == Interval.TICK:
             ticks: List[TickData] = self.engine.load_tick_data(
                 symbol,
                 exchange,
@@ -405,10 +464,12 @@ class ManagerWidget(QtWidgets.QWidget):
         interval: Interval
     ) -> None:
         """"""
+        interval_str = interval.value if isinstance(interval, Interval) else interval
+
         n = QtWidgets.QMessageBox.warning(
             self,
             "删除确认",
-            f"请确认是否要删除{symbol} {exchange.value} {interval.value}的全部数据",
+            f"请确认是否要删除{symbol} {exchange.value} {interval_str}的全部数据",
             QtWidgets.QMessageBox.Ok,
             QtWidgets.QMessageBox.Cancel
         )
@@ -416,7 +477,13 @@ class ManagerWidget(QtWidgets.QWidget):
         if n == QtWidgets.QMessageBox.Cancel:
             return
 
-        if interval == Interval.TICK:
+        if interval == Interval_DR:
+            count: int = self.engine.delete_dividend_data(
+                symbol,
+                exchange,
+            )
+
+        elif interval == Interval.TICK:
             count: int = self.engine.delete_tick_data(
                 symbol,
                 exchange,
@@ -432,31 +499,64 @@ class ManagerWidget(QtWidgets.QWidget):
         QtWidgets.QMessageBox.information(
             self,
             "删除成功",
-            f"已删除{symbol} {exchange.value} {interval.value}共计{count}条数据",
+            f"已删除{symbol} {exchange.value} {interval_str}共计{count}条数据",
             QtWidgets.QMessageBox.Ok
         )
 
-    def update_data(self) -> None:
+    def update_data(
+        self,
+        symbol: str=None,
+        exchange: Exchange=None,
+        interval: Interval=None
+    ) -> None:
         """"""
-        overviews: List[BarOverview,TickOverview] = self.engine.get_bar_overview() + self.engine.get_tick_overview()
+        overviews: List[BarOverview | TickOverview | DividendOverview] = (
+                self.engine.get_bar_overview() +
+                self.engine.get_tick_overview() +
+                self.engine.get_dividend_overview()
+        )
+
+        # 过滤
+        new_overviews = []
+        for ow in overviews:
+            if symbol is not None and symbol != ow.symbol:
+                continue
+            if exchange is not None and exchange != ow.exchange:
+                continue
+            if interval is not None:
+                if interval == Interval_DR and not isinstance(ow, DividendOverview):
+                    continue
+                if interval == Interval.TICK and not isinstance(ow, TickOverview):
+                    continue
+                if isinstance(ow, BarOverview) and interval != ow.interval:
+                    continue
+
+            new_overviews.append(ow)
+        overviews = new_overviews
+
         total: int = len(overviews)
-        count: int = 0
+        # count: int = 0
 
         dialog: QtWidgets.QProgressDialog = QtWidgets.QProgressDialog(
             "历史数据更新中",
             "取消",
             0,
-            100
+            len(overviews)
         )
         dialog.setWindowTitle("更新进度")
         dialog.setWindowModality(QtCore.Qt.WindowModal)
         dialog.setValue(0)
 
-        for overview in overviews:
+        # 除权表不在循环体里面更新
+        need_update_diviend_symbol = set()
+
+        for idx, overview in enumerate(overviews):
             if dialog.wasCanceled():
                 break
 
-            if hasattr(overview, 'interval'):
+            need_update_diviend_symbol.add((overview.symbol, overview.exchange))
+
+            if isinstance(overview, BarOverview):
                 self.engine.download_bar_data(
                     overview.symbol,
                     overview.exchange,
@@ -464,16 +564,30 @@ class ManagerWidget(QtWidgets.QWidget):
                     overview.end,
                     self.output
                 )
-            else:
+            elif isinstance(overview, TickOverview):
                 self.engine.download_tick_data(
                     overview.symbol,
                     overview.exchange,
                     overview.end,
                     self.output
                 )
-            count += 1
-            progress = int(round(count / total * 100, 0))
-            dialog.setValue(progress)
+
+            dialog.setValue(idx+1)
+
+        need_update_diviend_symbol = list(need_update_diviend_symbol)
+        dialog.setWindowTitle('除权数据更新中')
+        dialog.setMaximum(len(need_update_diviend_symbol))
+        dialog.setValue(0)
+        for idx, (symbol, exchange) in enumerate(need_update_diviend_symbol):
+            if dialog.wasCanceled():
+                break
+            self.engine.download_dividend_data(
+                symbol,
+                exchange,
+                None,
+                self.output
+            )
+            dialog.setValue(idx+1)
 
         dialog.close()
 
@@ -558,11 +672,11 @@ class ImportDialog(QtWidgets.QDialog):
         self.setFixedWidth(300)
 
         # 设定为固定大小窗口，原方法在windows系统时，会让对话框的关闭按钮不可点击
-        if platform.system() == 'Windows':
-            flags = self.windowFlags() | QtCore.Qt.CustomizeWindowHint | QtCore.Qt.WindowType.MSWindowsFixedSizeDialogHint
-        else:
-            flags = (self.windowFlags() | QtCore.Qt.CustomizeWindowHint) & ~QtCore.Qt.WindowMaximizeButtonHint
-        self.setWindowFlags(flags)
+        # if platform.system() == 'Windows':
+        #     flags = self.windowFlags() | QtCore.Qt.CustomizeWindowHint | QtCore.Qt.WindowType.MSWindowsFixedSizeDialogHint
+        # else:
+        #     flags = (self.windowFlags() | QtCore.Qt.CustomizeWindowHint) & ~QtCore.Qt.WindowMaximizeButtonHint
+        # self.setWindowFlags(flags)
 
         file_button: QtWidgets.QPushButton = QtWidgets.QPushButton("选择文件")
         file_button.clicked.connect(self.select_file)
@@ -654,11 +768,11 @@ class DownloadDialog(QtWidgets.QDialog):
         self.setFixedWidth(300)
 
         # 设定为固定大小窗口，原方法在windows系统时，会让对话框的关闭按钮不可点击
-        if platform.system() == 'Windows':
-            flags = self.windowFlags() | QtCore.Qt.CustomizeWindowHint | QtCore.Qt.WindowType.MSWindowsFixedSizeDialogHint
-        else:
-            flags = (self.windowFlags() | QtCore.Qt.CustomizeWindowHint) & ~QtCore.Qt.WindowMaximizeButtonHint
-        self.setWindowFlags(flags)
+        # if platform.system() == 'Windows':
+        #     flags = self.windowFlags() | QtCore.Qt.CustomizeWindowHint | QtCore.Qt.WindowType.MSWindowsFixedSizeDialogHint
+        # else:
+        #     flags = (self.windowFlags() | QtCore.Qt.CustomizeWindowHint) & ~QtCore.Qt.WindowMaximizeButtonHint
+        # self.setWindowFlags(flags)
 
         self.symbol_edit: QtWidgets.QLineEdit = QtWidgets.QLineEdit()
 
@@ -671,7 +785,8 @@ class DownloadDialog(QtWidgets.QDialog):
             self.interval_combo.addItem(str(i.name), i)
 
         end_dt: datetime = datetime.now()
-        start_dt: datetime = end_dt - timedelta(days=3 * 365)
+        # start_dt: datetime = end_dt - timedelta(days=3 * 365)
+        start_dt: datetime = datetime(1980, 1, 1)
 
         self.start_date_edit: QtWidgets.QDateEdit = QtWidgets.QDateEdit(
             QtCore.QDate(
@@ -707,6 +822,10 @@ class DownloadDialog(QtWidgets.QDialog):
             count: int = self.engine.download_tick_data(symbol, exchange, start, self.output)
         else:
             count: int = self.engine.download_bar_data(symbol, exchange, interval, start, self.output)
+
+        # 更新数据时同时刷新除权表
+        if count > 0:
+            count += self.engine.download_dividend_data(symbol, exchange, None, self.output)
 
         QtWidgets.QMessageBox.information(self, "下载结束", f"下载总数据量：{count}条")
 

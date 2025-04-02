@@ -3,9 +3,9 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Callable
 
 from vnpy.trader.engine import BaseEngine, MainEngine, EventEngine
-from vnpy.trader.constant import Interval, Exchange
-from vnpy.trader.object import BarData, TickData, ContractData, HistoryRequest
-from vnpy.trader.database import BaseDatabase, get_database, BarOverview, TickOverview, DB_TZ
+from vnpy.trader.constant import Interval, Exchange, Dividend
+from vnpy.trader.object import BarData, TickData, DividendData, ContractData, HistoryRequest
+from vnpy.trader.database import BaseDatabase, get_database, BarOverview, TickOverview, DividendOverview, DB_TZ
 from vnpy.trader.datafeed import BaseDatafeed, get_datafeed
 from vnpy.trader.utility import ZoneInfo
 
@@ -195,31 +195,56 @@ class ManagerEngine(BaseEngine):
         """
         Query bar data from datafeed.
         """
-        req: HistoryRequest = HistoryRequest(
-            symbol=symbol,
-            exchange=exchange,
-            interval=Interval(interval),
-            start=start,
-            end=datetime.now(DB_TZ)
-        )
+        # req: HistoryRequest = HistoryRequest(
+        #     symbol=symbol,
+        #     exchange=exchange,
+        #     interval=Interval(interval),
+        #     start=start,
+        #     end=datetime.now(DB_TZ),
+        #     dividend=Dividend.NONE
+        # )
+        #
+        # vt_symbol: str = f"{symbol}.{exchange.value}"
+        # contract: Optional[ContractData] = self.main_engine.get_contract(vt_symbol)
+        #
+        # # If history data provided in gateway, then query
+        # if contract and contract.history_data:
+        #     data: List[BarData] = self.main_engine.query_history(
+        #         req, contract.gateway_name
+        #     )
+        # # Otherwise use datafeed to query data
+        # else:
+        #     data: List[BarData] = self.datafeed.query_bar_history(req, output)
+        #
+        # if data:
+        #     self.database.save_bar_data(data)
+        #     return (len(data))
+        #
+        # return 0
+        start_dt: datetime = start
+        end_dt: datetime = datetime.now(DB_TZ)
+        count: int = 0
 
-        vt_symbol: str = f"{symbol}.{exchange.value}"
-        contract: Optional[ContractData] = self.main_engine.get_contract(vt_symbol)
+        while start_dt < end_dt:
+            new_start_dt: datetime = min(start_dt+timedelta(days=300), end_dt)
 
-        # If history data provided in gateway, then query
-        if contract and contract.history_data:
-            data: List[BarData] = self.main_engine.query_history(
-                req, contract.gateway_name
+            req: HistoryRequest = HistoryRequest(
+                symbol=symbol,
+                exchange=exchange,
+                start=start_dt,
+                end=new_start_dt,
+                interval=Interval(interval),
+                dividend=Dividend.NONE
             )
-        # Otherwise use datafeed to query data
-        else:
+
             data: List[BarData] = self.datafeed.query_bar_history(req, output)
+            start_dt = new_start_dt
 
-        if data:
-            self.database.save_bar_data(data)
-            return (len(data))
+            if data:
+                self.database.save_bar_data(data)
+                count += len(data)
 
-        return 0
+        return count
 
     def load_tick_data(
         self,
@@ -233,7 +258,8 @@ class ManagerEngine(BaseEngine):
             symbol,
             exchange,
             start,
-            end
+            end,
+            Dividend.FRONT_RATIO,
         )
 
         return ticks
@@ -274,6 +300,7 @@ class ManagerEngine(BaseEngine):
                 start=start_dt,
                 end=new_start_dt,
                 interval=Interval.TICK,
+                dividend=Dividend.NONE
             )
 
             data: List[TickData] = self.datafeed.query_tick_history(req, output)
@@ -282,5 +309,83 @@ class ManagerEngine(BaseEngine):
             if data:
                 self.database.save_tick_data(data)
                 count += len(data)
+
+        return count
+
+    def get_dividend_overview(
+        self,
+        symbol: str = None,
+        exchange: Exchange = None
+    ) -> List[DividendOverview]:
+        """"""
+        # 因为只有我写的支持这个，所以为None时返回空列表，让后面的逻辑更简单
+        result = self.database.get_dividend_overview(symbol, exchange)
+        if result is None:
+            result = []
+        return result
+
+    def load_dividend_data(
+        self,
+        symbol: str,
+        exchange: Exchange,
+        start: datetime,
+        end: datetime
+    ) -> List[DividendData]:
+        """"""
+        drs: List[DividendData] = self.database.load_dividend_data(
+            symbol,
+            exchange,
+            start,
+            end
+        )
+
+        return drs
+
+    def delete_dividend_data(
+        self,
+        symbol: str,
+        exchange: Exchange,
+    ) -> int:
+        """"""
+        count: int = self.database.delete_dividend_data(
+            symbol,
+            exchange,
+        )
+
+        return count
+
+    def download_dividend_data(
+        self,
+        symbol: str,
+        exchange: Exchange,
+        start: datetime,
+        output: Callable
+    ) -> int:
+        """
+        Query dr data from datafeed.
+        """
+        if start is None:
+            start = datetime.min
+            # 尝试获取已有除权数据
+            r = self.get_dividend_overview(symbol, exchange)
+            if len(r) > 0:
+                start = r[0].end
+
+        start_dt: datetime = start
+        end_dt: datetime = datetime.now(DB_TZ)
+        count: int = 0
+
+        req: HistoryRequest = HistoryRequest(
+            symbol=symbol,
+            exchange=exchange,
+            start=start_dt,
+            end=end_dt,
+        )
+
+        data: List[DividendData] = self.datafeed.query_dividend_history(req, output)
+
+        if data:
+            self.database.save_dividend_data(data)
+            count += len(data)
 
         return count
