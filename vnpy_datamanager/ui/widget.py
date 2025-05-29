@@ -146,7 +146,7 @@ class ManagerWidget(QtWidgets.QWidget):
             "最低价",
             "前收盘价",
             "成交量",
-            "换手率",
+            "成交额",
             "持仓量",
             "买一价",
             "买一量",
