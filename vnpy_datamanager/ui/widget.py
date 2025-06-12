@@ -152,8 +152,8 @@ class ManagerWidget(QtWidgets.QWidget):
         self.tree.clear()
 
         # 初始化节点缓存字典
-        interval_childs: Dict[Interval, QtWidgets.QTreeWidgetItem] = {}
-        exchange_childs: Dict[tuple[Interval, Exchange], QtWidgets.QTreeWidgetItem] = {}
+        interval_childs: dict[Interval, QtWidgets.QTreeWidgetItem] = {}
+        exchange_childs: dict[tuple[Interval, Exchange], QtWidgets.QTreeWidgetItem] = {}
 
         # 查询数据汇总，并基于合约代码进行排序
         overviews: List[BarOverview] = self.engine.get_bar_overview() + self.engine.get_tick_overview()
@@ -178,7 +178,7 @@ class ManagerWidget(QtWidgets.QWidget):
             if not exchange_child:
                 interval_child: QtWidgets.QTreeWidgetItem = interval_childs[interval]
 
-                exchange_child: QtWidgets.QTreeWidgetItem = QtWidgets.QTreeWidgetItem(interval_child)
+                exchange_child = QtWidgets.QTreeWidgetItem(interval_child)
                 exchange_child.setText(0, overview.exchange.value)
 
                 exchange_childs[key] = exchange_child
@@ -439,6 +439,7 @@ class ManagerWidget(QtWidgets.QWidget):
     def update_data(self) -> None:
         """"""
         overviews: List[BarOverview,TickOverview] = self.engine.get_bar_overview() + self.engine.get_tick_overview()
+
         total: int = len(overviews)
         count: int = 0
 
@@ -509,7 +510,7 @@ class DataCell(QtWidgets.QTableWidgetItem):
 class DateRangeDialog(QtWidgets.QDialog):
     """"""
 
-    def __init__(self, start: datetime, end: datetime, parent=None) -> None:
+    def __init__(self, start: datetime, end: datetime, parent: QtWidgets.QWidget | None = None) -> None:
         """"""
         super().__init__(parent)
 
@@ -540,7 +541,7 @@ class DateRangeDialog(QtWidgets.QDialog):
 
         self.setLayout(form)
 
-    def get_date_range(self) -> Tuple[datetime, datetime]:
+    def get_date_range(self) -> tuple[datetime, datetime]:
         """"""
         start = self.start_edit.dateTime().toPython()
         end = self.end_edit.dateTime().toPython() + timedelta(days=1)
@@ -550,7 +551,7 @@ class DateRangeDialog(QtWidgets.QDialog):
 class ImportDialog(QtWidgets.QDialog):
     """"""
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         """"""
         super().__init__()
 
@@ -644,7 +645,7 @@ class ImportDialog(QtWidgets.QDialog):
 class DownloadDialog(QtWidgets.QDialog):
     """"""
 
-    def __init__(self, engine: ManagerEngine, parent=None) -> None:
+    def __init__(self, engine: ManagerEngine, parent: QtWidgets.QWidget | None = None) -> None:
         """"""
         super().__init__()
 
@@ -701,12 +702,12 @@ class DownloadDialog(QtWidgets.QDialog):
 
         start_date = self.start_date_edit.date()
         start: datetime = datetime(start_date.year(), start_date.month(), start_date.day())
-        start: datetime = start.replace(tzinfo=DB_TZ)
+        start = start.replace(tzinfo=DB_TZ)
 
         if interval == Interval.TICK:
             count: int = self.engine.download_tick_data(symbol, exchange, start, self.output)
         else:
-            count: int = self.engine.download_bar_data(symbol, exchange, interval, start, self.output)
+            count = self.engine.download_bar_data(symbol, exchange, interval, start, self.output)
 
         QtWidgets.QMessageBox.information(self, "下载结束", f"下载总数据量：{count}条")
 
